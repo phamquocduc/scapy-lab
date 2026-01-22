@@ -1,24 +1,15 @@
-# receive_10.py (Fixed Syntax & Improved)
-
 import socket
 import json
 import subprocess
 import shlex
 import hmac
 import hashlib
-import sys # Thêm import sys để thoát chương trình
+import sys 
 
-# =======================================================
-# === Cấu hình Server ===
-# =======================================================
 LISTEN_IPv6 = "fd53:aaaa:bbb:5:da3a:ddff:fea4:c04a"
 LISTEN_PORT = 13344
 BUFFER_SIZE = 4096
-SHARED_SECRET_KEY = b"4sjqyBReJ#sja4oa" 
-
-# =======================================================
-# === Các Hàm Thực Thi Lệnh (Action Handlers) ===
-# =======================================================
+SHARED_SECRET_KEY = b"8cf39598082ef29891b894673da656e2c008ff8e2023b13903c8c909784aa463" 
 
 import re
 
@@ -26,18 +17,14 @@ def is_valid_mac(mac):
     return re.match(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$", mac)
 
 def run_shell_command(command_str):
-    """Hàm phụ trợ để chạy lệnh shell an toàn và trả về kết quả."""
     print(f"    - Executing: '{command_str}'")
     
-    # Mặc định, không dùng shell
     use_shell = False
     
-    # Kiểm tra xem chuỗi lệnh có chứa các ký tự cần shell để diễn giải không
     if "shutdown" in command_str or ">" in command_str or "|" in command_str:
         use_shell = True
 
     try:
-        # Chỉ sử dụng shell=True khi thực sự cần thiết
         if use_shell:
             print("    (Running with shell=True)")
             proc = subprocess.run(command_str, shell=True, capture_output=True, text=True, timeout=15)
@@ -46,7 +33,6 @@ def run_shell_command(command_str):
 
         output = proc.stdout + proc.stderr
         
-        # Chỉ in output nếu có nội dung
         if output.strip():
             print("    - Command Output:")
             print("    -------------------------------------")
@@ -59,32 +45,26 @@ def run_shell_command(command_str):
         print(f"    - Command Error: {e}")
         return {"status": "error", "output": str(e)}
 
-# HÀM MỚI BẮT ĐẦU TỪ ĐÂY
 def set_ipv4_action(params):
-    """Thực thi việc thay đổi địa chỉ IPv4."""
     ip = params.get("ip")
-    prefix = params.get("prefix", 24) # Prefix 24 (255.255.255.0) là một giá trị mặc định phổ biến cho IPv4
-    iface = params.get("iface", "eth0")
+    prefix = params.get("prefix", 24) 
+    iface = params.get("iface", "eth0.5")
     if not ip: return {"status": "error", "output": "Missing 'ip' parameter."}
     
-    # Xóa các địa chỉ IPv4 cũ trên interface để tránh xung đột
     run_shell_command(f"ip -4 addr flush dev {iface}")
-    # Thêm địa chỉ IPv4 mới
     return run_shell_command(f"ip addr add {ip}/{prefix} dev {iface}")
 
 
 def set_ipv6_action(params):
-    """Thực thi việc thay đổi địa chỉ IPv6."""
     ip = params.get("ip")
     prefix = params.get("prefix", 64)
-    iface = params.get("iface", "eth0.7")
+    iface = params.get("iface", "eth0.5")
     if not ip: return {"status": "error", "output": "Missing 'ip' parameter."}
     
     run_shell_command(f"ip -6 addr flush dev {iface}")
     return run_shell_command(f"ip -6 addr add {ip}/{prefix} dev {iface}")
 
 def set_mac_action(params):
-    """Lên lịch thay đổi MAC và reboot."""
     mac = params.get("mac")
     iface = params.get("iface", "eth0")
     if not mac: return {"status": "error", "output": "Missing 'mac' parameter in request."}
@@ -115,10 +95,8 @@ def set_mac_action(params):
         
         enable_result = run_shell_command(f"systemctl enable {service_name}")
         if "error" in enable_result.get("status", ""):
-             # Kiểm tra lỗi chung chung hơn
              return {"status": "error", "output": f"Failed to enable systemd service: {enable_result['output']}"}
 
-        # SỬA LỖI Ở ĐÂY: Thay '+0.25' bằng 'now'
         print("    - Scheduling reboot NOW...")
         run_shell_command("shutdown -r now")
 
@@ -132,40 +110,32 @@ def set_mac_action(params):
 def set_vlan_action(params):
     """Thực thi việc xóa danh sách VLAN cũ và thêm VLAN mới."""
     vlan_id = params.get("vlan_id")
-    rm_vlans = params.get("rm_vlan", []) # Nhận mảng các VLAN cần xóa
+    rm_vlans = params.get("rm_vlan", []) 
     iface = params.get("iface", "eth0")
     
     if vlan_id is None: 
         return {"status": "error", "output": "Missing 'vlan_id' parameter."}
 
-    # 1. Xóa các VLAN trong danh sách rm_vlans
     for vid in rm_vlans:
         if vid > 0:
             print(f"    - Removing old VLAN: {iface}.{vid}")
             run_shell_command(f"ip link del {iface}.{vid} 2>/dev/null")
 
-    # 2. Thêm VLAN mới (nếu vlan_id > 0)
     if vlan_id == 0:
         return {"status": "success", "output": f"Removed VLANs {rm_vlans}. No new VLAN added."}
     else:
-        # Xóa chính nó trước nếu lỡ trùng ID để tránh lỗi 'File exists'
         run_shell_command(f"ip link del {iface}.{vlan_id} 2>/dev/null")
         
         print(f"    - Adding new VLAN: {iface}.{vlan_id}")
         result = run_shell_command(f"ip link add link {iface} name {iface}.{vlan_id} type vlan id {vlan_id}")
         
-        # Luôn luôn UP interface mới sau khi tạo
         run_shell_command(f"ip link set {iface}.{vlan_id} up")
         return result
 
 def get_config_action(params):
     """Lấy cấu hình mạng hiện tại."""
-    iface = params.get("iface", "eth0.7")
-    return run_shell_command(f"ip addr show dev {iface}")
+    return run_shell_command(f"ip a")
 
-# =======================================================
-# === Bộ Điều Khiển Chính (Main Controller) ===
-# =======================================================
 COMMAND_HANDLERS = {
     "set_ipv4": set_ipv4_action,
     "set_ipv6": set_ipv6_action,
@@ -175,7 +145,6 @@ COMMAND_HANDLERS = {
 }
 
 def process_request(data_json):
-    """Xác thực và điều phối lệnh."""
     try:
         signature = data_json["signature"]
         payload_str = json.dumps(data_json["payload"], sort_keys=True).encode('utf-8')
@@ -195,9 +164,6 @@ def process_request(data_json):
     else:
         return {"status": "error", "output": f"Unknown command: '{command}'"}
 
-# =======================================================
-# === Vòng Lặp Server ===
-# =======================================================
 def run_server():
     print("--- Remote Control Protocol Receive ---")
     print(f"Listening on: [{LISTEN_IPv6}]:{LISTEN_PORT}")
@@ -225,20 +191,14 @@ def run_server():
                     
                     try:
                         data_json = json.loads(data_raw.decode('utf-8'))
-                        
-                        # ======== THAY ĐỔI CHÍNH Ở ĐÂY ========
-                        # 1. Nhận kết quả trả về từ process_request
+
                         response = process_request(data_json)
                         
-                        # 2. Kiểm tra xem có lỗi xác thực không
                         if response and response.get("status") == "error":
-                            # In ra lỗi một cách rõ ràng
                             print(f"   [AUTH_ERROR] Request from {addr[0]} rejected.")
                             print(f"   Reason: {response.get('output')}")
                         else:
-                            # Nếu không có lỗi, chỉ cần thông báo đã xử lý
                             print("<-- Command processed successfully. No response sent.")
-                        # =====================================
 
                     except json.JSONDecodeError:
                         print("   [ERROR] Invalid JSON format received.")
