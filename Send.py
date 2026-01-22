@@ -1,4 +1,3 @@
-# control_client.py
 import socket
 import json
 import random
@@ -7,77 +6,57 @@ import hmac
 import hashlib
 from scapy.all import *
 
-# =======================================================
-# === Cấu hình Client ===
-# =======================================================
 PI_HOST_IPv6 = "fd53:aaaa:bbb:5:da3a:ddff:fea4:c04a"
 PI_HOST_MAC = "D8:3A:DD:A4:C0:4A"
 PI_CONTROL_PORT = 13344
 
-MY_IFACE = "Ethernet"
-# ĐỊA CHỈ HỢP LỆ (WHITELISTED)
+MY_IFACE = "Ethernet" 
 MY_MAC = "2C:58:B9:8B:4E:24"
 MY_IPv6 = "fd53:aaaa:bbb:5::10"
 
-# ĐỊA CHỈ GIẢ MẠO (SPOOFED) DÙNG ĐỂ KIỂM TRA TƯỜNG LỬA
-SPOOFED_MAC = "DE:AD:BE:EF:CA:FE"
+SPOOFED_MAC = "2C:58:B9:8B:4E:25"
 SPOOFED_IPv6 = "fd53:aaaa:bbb:5::bad1"
 
-# KHÓA BÍ MẬT - Phải giống hệt với khóa ở server
-SHARED_SECRET_KEY = b"4sjqyBReJ#sja4oa"
+SHARED_SECRET_KEY = b"8cf39598082ef29891b894673da656e2c008ff8e2023b13903c8c909784aa463"
 
-
-# =======================================================
-# === Hàm Gửi Lệnh (Hỗ trợ Giả mạo Nguồn) ===
-# =======================================================
-def send_structured_payload(payload_json):
-    print(f"--- Sending command to {PI_HOST_IPv6}:{PI_CONTROL_PORT} ---")
-
-    # Tạo chữ ký HMAC
+def send_structured_payload(payload_json, s_mac, s_ipv6):
     payload_str = json.dumps(payload_json, sort_keys=True).encode('utf-8')
     signature = hmac.new(SHARED_SECRET_KEY, payload_str, hashlib.sha256).hexdigest()
-    final_package = {
-        "payload": payload_json,
-        "signature": signature
-    }
-    final_package_bytes = json.dumps(final_package).encode('utf-8')
+    final_package = json.dumps({"payload": payload_json, "signature": signature}).encode('utf-8')
 
-    try:
-        # Tạo socket IPv6 TCP
-        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-
-        # Timeout tránh treo
-        sock.settimeout(3)
-
-        # Kết nối server
-        sock.connect((PI_HOST_IPv6, PI_CONTROL_PORT, 0, 0))
-
-        # Gửi dữ liệu
-        sock.sendall(final_package_bytes)
-
-        print("\n--- COMMAND STATUS ---")
-        print("Command sent successfully to the server.")
-        print("----------------------")
-
-    except Exception as e:
-        print(f"\nAN ERROR OCCURRED: {e}")
-
-    finally:
+    if s_mac == MY_MAC and s_ipv6 == MY_IPv6:
         try:
+            print(f"--- Sending REAL command via Standard Socket ---")
+            sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            sock.connect((PI_HOST_IPv6, PI_CONTROL_PORT))
+            sock.sendall(final_package)
             sock.close()
-        except:
-            pass
+            print("✅ Command executed successfully.")
+        except Exception as e:
+            print(f"❌ Connection failed: {e}")
 
+    else:
+        try:
+            print(f"--- Sending SPOOFED packet via Scapy (Firewall Test) ---")
+            ether = Ether(src=s_mac, dst=PI_HOST_MAC)
+            ip6 = IPv6(src=s_ipv6, dst=PI_HOST_IPv6)
+            tcp = TCP(sport=random.randint(1024, 65535), dport=PI_CONTROL_PORT, flags='S')
+            
+            packet = ether / ip6 / tcp / final_package
+            sendp(packet, iface=MY_IFACE, verbose=False)
+            print("🚀 Spoofed packet injected. Check 'dmesg' on Pi to see if it was DROPPED.")
+        except Exception as e:
+            print(f"❌ Scapy error: {e}")
 
 def main_menu():
     while True:
-        print("\n===== Remote Pi Configurator  =====")
-        print("--- Normal Commands (from whitelisted source) ---")
-        print("1. Get current network config (eth0.7)")
-        print("2. Set new IPv6 address for eth0.7")
-        print("3. Set new MAC address for eth0.7")
-        print("4. Set VLAN ID for eth0 (0 to remove VLAN)")
-        print("5. Set new IPv4 address for eth0.7")
+        print("\n===== Remote Pi Configurator (Firewall Tester) =====")
+        print("1. Get current network config")
+        print("2. Set new IPv6 address")
+        print("3. Set new MAC address")
+        print("4. Set VLAN ID for eth0")
+        print("5. Set new IPv4 address")
         print("\n--- Firewall Source Filtering Tests (should be DROPPED) ---")
         print("6. Send 'get_config' from SPOOFED MAC address")
         print("7. Send 'get_config' from SPOOFED IPv6 address")
@@ -87,12 +66,11 @@ def main_menu():
         choice = input("Enter your choice: ")
         
         payload = None
-        # Biến cờ để xác định xem có cần giả mạo không
-        spoof_mac = False
-        spoof_ipv6 = False
+        s_mac = MY_MAC
+        s_ipv6 = MY_IPv6
         
         if choice == '1':
-            payload = {"command": "get_config", "params": {"iface": "eth0"}}
+            payload = {"command": "get_config", "params": {"iface": "eth0.7"}}
         elif choice == '2':
             ip = input("  Enter new IPv6 address: ")
             payload = {"command": "set_ipv6", "params": {"ip": ip}}
@@ -101,63 +79,30 @@ def main_menu():
             payload = {"command": "set_mac", "params": {"mac": mac}}
         elif choice == '4':
             try:
-                vlan_id = int(input("  Enter new VLAN ID to add (e.g., 5, or 0 to only remove): "))
-                
-                # Nhập chuỗi, ví dụ: "5, 7, 10"
-                rm_vlan_input = input("  Enter VLAN IDs to remove, separated by commas (e.g., 5,7,10 or leave empty): ")
-                
-                # Chuyển chuỗi thành mảng các số nguyên
-                # Nếu người dùng để trống, rm_vlan sẽ là mảng rỗng []
-                if rm_vlan_input.strip():
-                    rm_vlan = [int(x.strip()) for x in rm_vlan_input.split(',')]
-                else:
-                    rm_vlan = []
-
-                payload = {
-                    "command": "set_vlan", 
-                    "params": {
-                        "vlan_id": vlan_id,
-                        "rm_vlan": rm_vlan  # Gửi mảng các ID cần xóa
-                    }
-                }
-            except ValueError:
-                print("Invalid input. Please enter numbers separated by commas.")
-                continue
+                vlan_id = int(input("  Enter new VLAN ID: "))
+                payload = {"command": "set_vlan", "params": {"vlan_id": vlan_id, "rm_vlan": []}}
+            except: continue
         elif choice == '5':
-            try:
-                ip = input("  Enter new IPv4 address: ")
-                prefix = int(input("  Enter prefix length (e.g., 24 for 255.255.255.0): "))
-                payload = {"command": "set_ipv4", "params": {"ip": ip, "prefix": prefix}}
-            except ValueError:
-                print("Invalid Prefix. Please enter a number.")
-                continue
+            ip = input("  Enter new IPv4 address: ")
+            payload = {"command": "set_ipv4", "params": {"ip": ip, "prefix": 24}}
         elif choice == '6':
-            print("\n>>> CONFIGURING TEST: Send from a spoofed MAC. This should fail.")
             payload = {"command": "get_config", "params": {"iface": "eth0.7"}}
-            spoof_mac = True
+            s_mac = SPOOFED_MAC
         elif choice == '7':
-            print("\n>>> CONFIGURING TEST: Send from a spoofed IPv6. This should fail.")
             payload = {"command": "get_config", "params": {"iface": "eth0.7"}}
-            spoof_ipv6 = True
+            s_ipv6 = SPOOFED_IPv6
         elif choice == '8':
-            print("\n>>> CONFIGURING TEST: Send from a spoofed MAC & IPv6. This should fail.")
             payload = {"command": "get_config", "params": {"iface": "eth0.7"}}
-            spoof_mac = True
-            spoof_ipv6 = True
+            s_mac = SPOOFED_MAC
+            s_ipv6 = SPOOFED_IPv6
         elif choice == '0':
             break
         else:
             print("Invalid choice.")
             continue
             
-        # Nếu payload đã được tạo, tiến hành gửi đi
         if payload:
-            # Xác định địa chỉ nguồn dựa trên các cờ đã đặt
-            source_mac = SPOOFED_MAC if spoof_mac else MY_MAC
-            source_ipv6 = SPOOFED_IPv6 if spoof_ipv6 else MY_IPv6
-            
-            # Gọi hàm gửi với các địa chỉ nguồn thích hợp
-            send_structured_payload(payload)
+            send_structured_payload(payload, s_mac, s_ipv6)
 
 if __name__ == "__main__":
     main_menu()
